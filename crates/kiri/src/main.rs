@@ -81,7 +81,7 @@ usage: kiri COMMAND          docker's commands, on Kiri: kiri run, ps, exec,
        kiri daemon
        kiri bridge [--socket PATH]   (WSL2: the end of kiri-win.exe)
        kiri ui [--start] [--view containers|images|volumes|networks]
-       kiri setup [--use] [--no-agent] | kiri setup --uninstall
+       kiri setup [--use] [--no-agent] | --domains | --trust | --docker-socket | --uninstall
        kiri build-with [docker|kiri]   which builder docker build uses
        kiri update [--check]
        kiri diag logs [-f] [--ui|--engine|--cli] [--errors] [-n N]

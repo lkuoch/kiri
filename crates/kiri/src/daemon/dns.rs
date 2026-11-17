@@ -26,7 +26,7 @@ pub fn start() -> io::Result<()> {
         let mut buf = [0u8; 512];
         loop {
             let Ok((n, from)) = sock.recv_from(&mut buf) else { continue };
-            if let Some(reply) = answer(&buf[..n]) {
+            if let Some(reply) = answer_for(&buf[..n], &super::suffixes::all()) {
                 let _ = sock.send_to(&reply, from);
             }
         }
@@ -36,12 +36,22 @@ pub fn start() -> io::Result<()> {
 
 /// True when macOS will send `*.kiri.local` lookups to Kiri.
 pub fn installed() -> bool {
-    std::fs::read_to_string(RESOLVER).is_ok_and(|s| s.contains(&format!("port {PORT}")))
+    installed_for(SUFFIX)
+}
+
+/// True when macOS sends lookups under `suffix` to Kiri.
+pub fn installed_for(suffix: &str) -> bool {
+    std::fs::read_to_string(super::suffixes::resolver(suffix)).is_ok_and(|s| s.contains(&format!("port {PORT}")))
+}
+
+#[cfg(test)]
+fn answer(q: &[u8]) -> Option<Vec<u8>> {
+    answer_for(q, &[SUFFIX.to_owned()])
 }
 
 /// One reply for one query: A → 127.0.0.1 under kiri.local, an empty answer
 /// for other types there (so AAAA falls back to A), REFUSED elsewhere.
-fn answer(q: &[u8]) -> Option<Vec<u8>> {
+fn answer_for(q: &[u8], suffixes: &[String]) -> Option<Vec<u8>> {
     if q.len() < 12 || q[2] & 0x80 != 0 || u16::from_be_bytes([q[4], q[5]]) != 1 {
         return None;
     }
@@ -66,7 +76,7 @@ fn answer(q: &[u8]) -> Option<Vec<u8>> {
     }
     let qtype = u16::from_be_bytes([*q.get(i)?, *q.get(i + 1)?]);
     let question = q.get(12..i + 4)?;
-    let ours = name == SUFFIX || name.ends_with(&format!(".{SUFFIX}"));
+    let ours = suffixes.iter().any(|s| name == *s || name.ends_with(&format!(".{s}")));
     let a = ours && qtype == 1;
     let mut r = Vec::with_capacity(question.len() + 28);
     r.extend_from_slice(&q[..2]);
@@ -259,7 +269,7 @@ fn mac_resolvers(name: &str, resolv_conf: &Path, resolver_dir: &Path) -> Vec<Soc
             .find_map(|l| l.trim().strip_prefix("domain").map(|d| d.trim().trim_end_matches('.').to_ascii_lowercase()))
             .filter(|d| !d.is_empty())
             .unwrap_or(file);
-        if domain == SUFFIX {
+        if domain == SUFFIX || super::suffixes::extra().contains(&domain) {
             continue;
         }
         let inside = name == domain || name.ends_with(&format!(".{domain}"));
@@ -308,6 +318,9 @@ mod tests {
         assert_eq!((aaaa[3], aaaa[7]), (0, 0));
         assert_eq!(answer(&query("example.com", 1)).unwrap()[3], 5);
         assert_eq!(answer(&query("notkiri.local", 1)).unwrap()[3], 5);
+        let extra = [super::SUFFIX.to_owned(), "gnosis.test".to_owned()];
+        assert_eq!(super::answer_for(&query("api.gnosis.test", 1), &extra).unwrap()[7], 1);
+        assert_eq!(super::answer_for(&query("api.other.test", 1), &extra).unwrap()[3], 5);
         assert!(answer(&[0; 5]).is_none());
     }
 

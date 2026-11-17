@@ -405,8 +405,8 @@ pub struct Target {
 
 /// Ports web servers usually listen on, most likely first.
 const WEB_PORTS: [u16; 14] = [80, 8080, 3000, 8000, 5000, 5173, 4200, 8888, 9000, 8081, 4000, 3001, 15672, 8443];
-/// Ports that are surely not a web page: databases, queues, caches.
-const NOT_WEB: [u16; 12] = [5432, 3306, 6379, 27017, 5672, 4369, 25672, 9042, 11211, 1433, 1521, 2181];
+/// Ports that are surely not a web page: databases, queues, caches, mail.
+const NOT_WEB: [u16; 22] = [5432, 3306, 6379, 27017, 5672, 4369, 25672, 9042, 11211, 1433, 1521, 2181, 25, 465, 587, 1025, 2525, 4222, 6222, 1883, 9092, 5433];
 
 /// The ports that could be the web port, best first, and whether the first
 /// is certain (the label, or the only port published): published ports
@@ -594,6 +594,9 @@ mod tests {
         assert!(!sure);
         assert_eq!(c[0], 15672);
         assert_eq!(&c[c.len() - 3..], &[4369, 5672, 25672]);
+        // Mailpit and NATS: the web page, not SMTP or the client port.
+        assert_eq!(candidates(&t(None, &[1025, 8025], &[])).0[0], 8025);
+        assert_eq!(candidates(&t(None, &[4222, 8222], &[])).0[0], 8222);
         // Declared 443 and 80: 80, not the lower-sorted one.
         assert_eq!(candidates(&t(None, &[], &[443, 80])).0[0], 80);
     }

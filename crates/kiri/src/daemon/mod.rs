@@ -8,6 +8,7 @@ mod api;
 mod binds;
 mod builder;
 pub mod dns;
+pub mod suffixes;
 pub mod tls;
 pub mod proxy;
 mod domains;

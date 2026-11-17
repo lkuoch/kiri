@@ -2544,7 +2544,7 @@ impl Engine {
     /// services.
     pub fn route(&self, host: &str) -> Option<super::domains::Target> {
         let host = host.split(':').next()?.to_ascii_lowercase();
-        let name = host.strip_suffix(".kiri.localhost").or_else(|| host.strip_suffix(".kiri.local"))?.to_owned();
+        let name = super::suffixes::strip(&host)?.to_owned();
         let st = self.lock();
         let c = st.containers.values().find(|c| {
             c.status == Status::Running && {
@@ -2552,7 +2552,7 @@ impl Engine {
                 let service = format!("{}.{}", label("com.docker.compose.service"), label("com.docker.compose.project"));
                 // `dev.kiri.domain=api.myapp` (comma-separated for several) picks the names.
                 let chosen = label(DOMAIN_LABEL).split(',').map(|d| own_name(d.trim())).any(|d| !d.is_empty() && d.eq_ignore_ascii_case(&name));
-                chosen || c.name.eq_ignore_ascii_case(&name) || service.eq_ignore_ascii_case(&name) || (name.len() >= 12 && c.id.starts_with(&name))
+                chosen || same_name(&c.name, &name) || same_name(&service, &name) || (name.len() >= 12 && c.id.starts_with(&name))
             }
         })?;
         let ip = if c.spec.network_mode == "host" { [127, 0, 0, 1] } else { c.ip? };
@@ -3677,7 +3677,24 @@ pub const DOMAIN_LABEL: &str = "dev.kiri.domain";
 /// `api.myapp`, from any of `api.myapp`, `api.myapp.kiri.local` or
 /// `api.myapp.kiri.localhost`.
 fn own_name(d: &str) -> &str {
-    d.strip_suffix(".kiri.localhost").or_else(|| d.strip_suffix(".kiri.local")).unwrap_or(d)
+    super::suffixes::strip(d).unwrap_or(d)
+}
+
+/// A container or service name against a host name: `_` is not valid in a
+/// host name, so `my_app` also answers as `my-app`.
+fn same_name(container: &str, host: &str) -> bool {
+    container.len() == host.len() && container.bytes().zip(host.bytes()).all(|(c, h)| c.eq_ignore_ascii_case(&h) || (c == b'_' && h == b'-'))
+}
+
+#[cfg(test)]
+mod same_name_tests {
+    #[test]
+    fn underscores_answer_as_hyphens() {
+        assert!(super::same_name("gnosis_srv_db.gnosis", "gnosis-srv-db.gnosis"));
+        assert!(super::same_name("gnosis_srv_db.gnosis", "Gnosis_Srv_Db.gnosis"));
+        assert!(!super::same_name("gnosis-srv-db", "gnosis_srv_db"));
+        assert!(!super::same_name("web", "web2"));
+    }
 }
 
 /// Docker's container-name rule: non-empty, `[a-zA-Z0-9_.-]` only. A name

@@ -70,7 +70,11 @@ fn agent() -> ureq::Agent {
 }
 
 pub fn latest() -> io::Result<Release> {
-    let url = std::env::var("KIRI_UPDATE_URL").unwrap_or_else(|_| FEED.to_owned());
+    // The law branch is rebuilt from the lkuoch/kiri fork, so a release from FEED must never replace it.
+    let Ok(url) = std::env::var("KIRI_UPDATE_URL") else {
+        let _ = FEED;
+        return Err(io::Error::other("this Kiri is built from the lkuoch/kiri law branch: rebuild it with cargo xtask app"));
+    };
     let release = (|| -> io::Result<Release> {
         let body = agent().get(&url).call().map_err(io::Error::other)?.body_mut().with_config().limit(64 << 10).read_to_vec().map_err(io::Error::other)?;
         serde_json::from_slice(&body).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, format!("{url}: {e}")))

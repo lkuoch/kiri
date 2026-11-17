@@ -122,8 +122,26 @@ fn step(what: &'static str) -> impl Fn(io::Error) -> io::Error {
     move |e| io::Error::new(e.kind(), format!("{what}: {e}"))
 }
 
+const USAGE: &str = "usage: kiri setup [--use] [--no-agent] [--no-domains]
+       kiri setup --domains         names under *.kiri.local and the suffixes in ~/.kiri/domains.json
+       kiri setup --trust           trust Kiri's certificate authority for https://<name>.kiri.local
+       kiri setup --docker-socket   link /var/run/docker.sock to Kiri
+       kiri setup --uninstall";
+
 pub fn run(args: &[String]) -> io::Result<()> {
     let flag = |f: &str| args.iter().any(|a| a == f);
+    if flag("--help") || flag("-h") {
+        println!("{USAGE}");
+        return Ok(());
+    }
+    if let Some(unknown) = args.iter().find(|a| !["--use", "--no-agent", "--no-domains", "--domains", "--trust", "--docker-socket", "--uninstall"].contains(&a.as_str())) {
+        return Err(io::Error::new(io::ErrorKind::InvalidInput, format!("kiri setup: unknown option {unknown}\n{USAGE}")));
+    }
+    if flag("--trust") {
+        crate::daemon::tls::trust()?;
+        println!("macOS trusts Kiri's certificate authority for https://<name>.{}", crate::daemon::suffixes::all().join(", https://<name>."));
+        return Ok(());
+    }
     if flag("--uninstall") {
         return uninstall();
     }
@@ -184,9 +202,22 @@ pub fn run(args: &[String]) -> io::Result<()> {
 /// Points macOS at Kiri for `*.kiri.local`. Writing /etc/resolver needs an
 /// administrator, so macOS asks for the password, once.
 pub fn domains() -> io::Result<()> {
-    use crate::daemon::dns;
+    use crate::daemon::{dns, suffixes};
+    let wanted: Vec<String> = std::iter::once(dns::SUFFIX.to_owned()).chain(suffixes::extra()).collect();
+    let missing: Vec<&String> = wanted.iter().filter(|s| !dns::installed_for(s)).collect();
+    if missing.is_empty() {
+        println!("containers answer at http://<name>.{}", wanted.join(", http://<name>."));
+        return Ok(());
+    }
     if dns::installed() {
-        println!("containers answer at http://<name>.kiri.local");
+        // Only extra suffixes are missing: their resolver files, and nothing else.
+        let tmp = std::env::temp_dir().join(format!("kiri-resolver-{}", std::process::id()));
+        std::fs::write(&tmp, format!("# Kiri: container names (kiri setup --uninstall removes this)\nnameserver 127.0.0.1\nport {}\n", dns::PORT))?;
+        let copies: Vec<String> = missing.iter().map(|s| { let f = suffixes::resolver(s); format!("cp '{}' {f} && chmod 644 {f}", tmp.display()) }).collect();
+        let result = as_admin(&format!("mkdir -p /etc/resolver && {}", copies.join(" && ")), "Kiri wants to give your containers names under your own suffixes.");
+        let _ = std::fs::remove_file(&tmp);
+        result?;
+        println!("containers answer at http://<name>.{}", wanted.join(", http://<name>."));
         return Ok(());
     }
     let tmp = std::env::temp_dir().join(format!("kiri-resolver-{}", std::process::id()));
@@ -201,6 +232,11 @@ pub fn domains() -> io::Result<()> {
         ),
         None => (format!("mkdir -p /etc/resolver && cp '{}' {} && chmod 644 {}", tmp.display(), dns::RESOLVER, dns::RESOLVER), "Kiri wants to give your containers names like myapp.kiri.local."),
     };
+    let extra: String = missing.iter().filter(|s| s.as_str() != dns::SUFFIX).map(|s| { let f = suffixes::resolver(s); format!(" && cp '{}' {f} && chmod 644 {f}", tmp.display()) }).collect();
+    let command = match command.find(" && (") {
+        Some(at) => format!("{}{extra}{}", &command[..at], &command[at..]),
+        None => format!("{command}{extra}"),
+    };
     let result = as_admin(&command, why);
     let _ = std::fs::remove_file(&tmp);
     if let Some(l) = &link {
@@ -208,7 +244,7 @@ pub fn domains() -> io::Result<()> {
         let _ = docker_socket_fallback(&crate::daemon::socket_path()?);
     }
     result?;
-    println!("containers answer at http://<name>.kiri.local");
+    println!("containers answer at http://<name>.{}", wanted.join(", http://<name>."));
     Ok(())
 }
 
@@ -418,11 +454,12 @@ fn remove_docker_socket() -> io::Result<()> {
 
 /// Takes `*.kiri.local` back; containers stay on `*.kiri.localhost`.
 pub fn remove_domains() -> io::Result<()> {
-    let resolver = crate::daemon::dns::RESOLVER;
-    if !Path::new(resolver).exists() {
+    use crate::daemon::{dns, suffixes};
+    let ours: Vec<String> = std::iter::once(dns::SUFFIX.to_owned()).chain(suffixes::extra()).filter(|s| dns::installed_for(s)).map(|s| suffixes::resolver(&s)).collect();
+    if ours.is_empty() {
         return Ok(());
     }
-    as_admin(&format!("rm -f {resolver}"), "Kiri wants to remove its *.kiri.local names.")?;
+    as_admin(&format!("rm -f {}", ours.join(" ")), "Kiri wants to remove its *.kiri.local names.")?;
     println!("removed *.kiri.local");
     Ok(())
 }

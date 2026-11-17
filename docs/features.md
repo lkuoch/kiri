@@ -36,7 +36,13 @@ Apple silicon and Intel Macs (macOS 14+), Windows 10 and 11 (x86-64 and Arm, thr
   `dev.kiri.domain=api.myapp` label picks a container's own names; HTTPS too
   (`https://<name>.kiri.local`), with Kiri's own certificate authority in
   `~/.kiri/tls`, whose name constraints allow only `*.kiri.local` and
-  `*.kiri.localhost` (Settings → Domains → HTTPS asks macOS to trust it)
+  `*.kiri.localhost` (Settings → Domains → HTTPS asks macOS to trust it); `kiri setup --trust` does the same from a terminal.
+  Your own suffixes: list them in `~/.kiri/domains.json`, such as
+  `{"suffixes": ["myapp.test"]}`, then run `kiri setup --domains` and
+  `kiri setup --trust` and restart the engine. The authority is remade for the
+  new list and stays limited to it. A one-label suffix must be `test`,
+  `internal`, `lan` or `home`. Compose names with `_` also answer with `-`,
+  such as `my-api.myapp.kiri.local` for service `my_api`
 - **Storage**: named and anonymous volumes, bind mounts of Mac paths
   (virtiofs), `--tmpfs`, `--mount`, `volume` commands
 - **Images**: `pull` (with `docker login` credentials), `push`, `tag`,

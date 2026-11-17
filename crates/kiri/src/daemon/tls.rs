@@ -23,7 +23,6 @@ use rustls::sign::CertifiedKey;
 
 /// The authority's name, as Keychain Access shows it.
 pub const CA_NAME: &str = "Kiri Local Certificate Authority";
-const SUFFIXES: [&str; 2] = ["kiri.local", "kiri.localhost"];
 
 pub fn dir() -> Option<PathBuf> {
     super::state_dir().ok().map(|d| d.join("tls"))
@@ -37,13 +36,13 @@ pub fn ca_path() -> Option<PathBuf> {
 
 /// The authority's fields. They are rebuilt the same way on every start, so
 /// with the saved key they sign exactly as the saved certificate does.
-fn ca_params() -> Result<CertificateParams, rcgen::Error> {
+fn ca_params(suffixes: &[String]) -> Result<CertificateParams, rcgen::Error> {
     let mut p = CertificateParams::new(Vec::<String>::new())?;
     p.is_ca = IsCa::Ca(BasicConstraints::Constrained(0));
     p.distinguished_name.push(DnType::CommonName, CA_NAME);
     p.distinguished_name.push(DnType::OrganizationName, "Kiri");
     p.name_constraints = Some(NameConstraints {
-        permitted_subtrees: SUFFIXES.iter().map(|s| GeneralSubtree::DnsName((*s).to_owned())).collect(),
+        permitted_subtrees: suffixes.iter().map(|s| GeneralSubtree::DnsName(s.clone())).collect(),
         // Exclude every IP address: with only the DNS subtrees permitted, an
         // IP SAN would otherwise be unconstrained, so a leaked CA key could
         // vouch for https://<any IP>. Kiri only ever issues for its own names.
@@ -70,9 +69,12 @@ fn authority() -> io::Result<(Issuer<'static, KeyPair>, CertificateDer<'static>)
     // from its name constraints. An older authority is replaced (the user
     // trusts the new one once), or that fix would never reach an install
     // that already had one.
-    const CA_VERSION: &str = "2";
+    // The suffixes are in the name constraints, so a new set of suffixes makes a new authority too.
+    let suffixes = super::suffixes::all();
+    let extra = super::suffixes::extra();
+    let ca_version = if extra.is_empty() { "2".to_owned() } else { format!("2+{}", extra.join(",")) };
     let version_path = dir.join("ca.version");
-    if key_path.is_file() && std::fs::read_to_string(&version_path).is_ok_and(|v| v.trim() == CA_VERSION).not() {
+    if key_path.is_file() && std::fs::read_to_string(&version_path).is_ok_and(|v| v.trim() == ca_version).not() {
         let _ = std::fs::remove_file(&key_path);
         let _ = std::fs::remove_file(&cert_path);
     }
@@ -82,19 +84,19 @@ fn authority() -> io::Result<(Issuer<'static, KeyPair>, CertificateDer<'static>)
             std::fs::create_dir_all(&dir)?;
             std::fs::set_permissions(&dir, std::os::unix::fs::PermissionsExt::from_mode(0o700))?;
             let key = KeyPair::generate().map_err(err)?;
-            let cert = ca_params().map_err(err)?.self_signed(&key).map_err(err)?;
+            let cert = ca_params(&suffixes).map_err(err)?.self_signed(&key).map_err(err)?;
             let tmp = key_path.with_extension("tmp");
             std::fs::write(&tmp, key.serialize_pem())?;
             std::fs::set_permissions(&tmp, std::os::unix::fs::PermissionsExt::from_mode(0o600))?;
             std::fs::rename(&tmp, &key_path)?;
             std::fs::write(&cert_path, cert.pem())?;
-            std::fs::write(&version_path, CA_VERSION)?;
+            std::fs::write(&version_path, &ca_version)?;
             key
         }
     };
     let pem = std::fs::read_to_string(&cert_path)?;
     let der = pem_to_der(&pem).ok_or_else(|| io::Error::other("ca.pem is not a certificate"))?;
-    Ok((Issuer::new(ca_params().map_err(err)?, key), der))
+    Ok((Issuer::new(ca_params(&suffixes).map_err(err)?, key), der))
 }
 
 fn pem_to_der(pem: &str) -> Option<CertificateDer<'static>> {
@@ -117,8 +119,12 @@ fn civil(days: i64) -> (i32, u8, u8) {
 
 /// Whether `host` is a name this authority may vouch for.
 pub fn ours(host: &str) -> bool {
+    ours_in(host, &super::suffixes::all())
+}
+
+fn ours_in(host: &str, suffixes: &[String]) -> bool {
     let h = host.trim_end_matches('.').to_ascii_lowercase();
-    SUFFIXES.iter().any(|s| h.ends_with(&format!(".{s}"))) && h.split('.').all(|l| !l.is_empty() && l.len() <= 63)
+    super::suffixes::strip_in(&h, suffixes).is_some_and(|n| !n.is_empty()) && h.split('.').all(|l| !l.is_empty() && l.len() <= 63)
 }
 
 /// Certificates for container names, made on first use and kept while the
@@ -402,7 +408,7 @@ mod tests {
     #[test]
     #[cfg(target_os = "macos")]
     fn untrusted_certificate_is_not_trusted() {
-        let mut p = super::ca_params().unwrap();
+        let mut p = super::ca_params(&super::super::suffixes::BUILT_IN.map(str::to_owned)).unwrap();
         p.distinguished_name.push(rcgen::DnType::CommonName, super::CA_NAME);
         let key = rcgen::KeyPair::generate().unwrap();
         let cert = p.self_signed(&key).unwrap();
@@ -435,5 +441,14 @@ mod tests {
         assert!(!super::ours("kiri.local"));
         assert!(!super::ours("example.com"));
         assert!(!super::ours("evil.kiri.local.example.com"));
+    }
+
+    #[test]
+    fn extra_suffixes_are_ours_and_nothing_else() {
+        let s: Vec<String> = ["kiri.local", "kiri.localhost", "gnosis.test"].map(str::to_owned).to_vec();
+        assert!(super::ours_in("api.gnosis.test", &s));
+        assert!(!super::ours_in("gnosis.test", &s));
+        assert!(!super::ours_in("api.other.test", &s));
+        assert!(!super::ours_in("google.com", &s));
     }
 }
